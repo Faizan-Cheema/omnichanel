@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     Search,
     Filter,
@@ -27,10 +27,92 @@ const InboxPage = () => {
     const [activeTab, setActiveTab] = useState('All');
     const [isAIActive, setIsAIActive] = useState(true);
     const [isClosing, setIsClosing] = useState(false);
-    const [activeThread, setActiveThread] = useState(0);
+    const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
     const [messageInput, setMessageInput] = useState('');
     const [showSlashMenu, setShowSlashMenu] = useState(false);
     const [isDrafting, setIsDrafting] = useState(false);
+    const [whatsappThreads, setWhatsappThreads] = useState<any[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [activeMessages, setActiveMessages] = useState<any[]>([]);
+    const [isMessagesLoading, setIsMessagesLoading] = useState(false);
+    const [isSending, setIsSending] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [activeMessages]);
+
+    useEffect(() => {
+        const fetchWhatsAppThreads = async (silent = false) => {
+            if (!silent) setIsLoading(true);
+            try {
+                const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api');
+                const data = await response.json();
+
+                // Map API data to our thread format
+                const mappedThreads = data.map((item: any) => ({
+                    id: item.id,
+                    name: item.name || item.phone_number,
+                    channel: "WhatsApp",
+                    snippet: item.last_message_preview,
+                    context: "Direct",
+                    chip: item.automate_response ? "AI Active" : "Manual",
+                    status: "New",
+                    priority: "Medium",
+                    sla: "2h", // Default SLA
+                    timestamp: new Date(item.last_message_timestamp),
+                    phone_number: item.phone_number
+                }));
+
+                setWhatsappThreads(prev => {
+                    const newThreads = [...mappedThreads];
+                    // Smart merge
+                    const merged = newThreads.map(nt => {
+                        const existing = prev.find(p => p.phone_number === nt.phone_number);
+                        if (existing && existing.timestamp.getTime() > nt.timestamp.getTime()) {
+                            return { ...nt, timestamp: existing.timestamp, snippet: existing.snippet };
+                        }
+                        return nt;
+                    });
+
+                    // Sort by timestamp descending so newest is always first
+                    return merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+                });
+            } catch (error) {
+                console.error('Error fetching WhatsApp threads:', error);
+                if (!silent) showToast('error', 'Failed to fetch WhatsApp threads');
+            } finally {
+                if (!silent) setIsLoading(false);
+            }
+        };
+
+        fetchWhatsAppThreads();
+
+        const pollInterval = setInterval(() => {
+            fetchWhatsAppThreads(true);
+        }, 10000);
+
+        return () => clearInterval(pollInterval);
+    }, []);
+
+    // Effect for INITIAL thread selection only
+    useEffect(() => {
+        if (!activeThreadId && whatsappThreads.length > 0) {
+            setActiveThreadId(whatsappThreads[0].phone_number);
+        }
+    }, [whatsappThreads, activeThreadId]);
+
+    const threads = whatsappThreads.filter(t =>
+        activeTab === 'All' || t.channel === activeTab
+    );
+
+    const currentThread = activeThreadId
+        ? whatsappThreads.find(t => t.phone_number === activeThreadId) || null
+        : (threads.length > 0 ? threads[0] : null);
 
     const templates = [
         { cmd: "/status", label: "Order Status Update", text: "Hi, I've checked your order #5432 and it is currently being processed." },
@@ -40,18 +122,143 @@ const InboxPage = () => {
 
     const tabs = ['All', 'WhatsApp', 'Calls', 'Web Chat'];
 
-    const threads = [
-        { id: 0, name: "Ahmed Khan", channel: "WhatsApp", snippet: "I need to track my order #5432", context: "SOW", chip: "Order Status", status: "New", priority: "High", sla: "02:14" },
-        { id: 1, name: "+92 300 1234567", channel: "Calls", snippet: "Missed call from customer", context: "GROW", chip: "Product Enquiry", status: "Missed", priority: "Low", sla: "15:00" },
-        { id: 2, name: "Sarah Johnson", channel: "Web Chat", snippet: "Can I change my delivery address?", context: "CONNECT", chip: "Agronomy", status: "In Progress", priority: "Medium", sla: "45:00" }
-    ];
+    useEffect(() => {
+        const fetchMessages = async (silent = false) => {
+            if (!currentThread || !currentThread.phone_number) return;
 
-    const currentThread = threads[activeThread];
+            if (!silent) setIsMessagesLoading(true);
+            try {
+                const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${currentThread.phone_number}`);
+                const data = await response.json();
+                setActiveMessages(data);
+
+                // Update the thread list snippet and timestamp if it's newer
+                if (data.length > 0) {
+                    const latestMsg = data[data.length - 1];
+                    setWhatsappThreads(prev => prev.map(t =>
+                        t.phone_number === currentThread.phone_number
+                            ? { ...t, snippet: latestMsg.text, timestamp: new Date(latestMsg.timestamp) }
+                            : t
+                    ));
+                }
+            } catch (error) {
+                console.error('Error fetching messages:', error);
+            } finally {
+                if (!silent && activeMessages.length === 0) setIsMessagesLoading(false); // Only hide spinner if it was shown
+            }
+        };
+
+        fetchMessages();
+
+        const pollInterval = setInterval(() => {
+            fetchMessages(true);
+        }, 5000);
+
+        return () => clearInterval(pollInterval);
+    }, [activeThreadId]); // Only re-run when the person changes, not when their status updates
+
+    // Separate effect for AI status synchronization to avoid flickering
+    useEffect(() => {
+        if (currentThread) {
+            setIsAIActive(currentThread.chip === "AI Active");
+        }
+    }, [currentThread?.chip]);
+
+    const formatTime = (date: Date) => {
+        if (isNaN(date.getTime())) return "";
+        const now = new Date();
+        const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / 60000);
+
+        if (diffInMinutes < 1) return "Just now";
+        if (diffInMinutes < 60) return `${diffInMinutes}m`;
+
+        const isToday = date.toDateString() === now.toDateString();
+        const isYesterday = new Date(now.getTime() - 86400000).toDateString() === date.toDateString();
+
+        if (isToday) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } else if (isYesterday) {
+            return 'Yesterday';
+        } else {
+            return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+    };
 
     const handleClose = (disposition: string) => {
         console.log("Closing with disposition:", disposition);
         showToast('success', `Conversation closed with disposition: ${disposition}`);
         setIsClosing(false);
+    };
+
+    const handleSendMessage = async () => {
+        if (!messageInput.trim() || !currentThread) return;
+
+        const text = messageInput.trim();
+        setMessageInput('');
+
+        // If it's a WhatsApp thread, use the POST API
+        if (currentThread.channel === 'WhatsApp' && currentThread.phone_number) {
+            setIsSending(true);
+            const newMessage = {
+                message_id: `wamid.OUTBOUND${Date.now()}`,
+                from: "15551900251", // Configurable or from context
+                to: currentThread.phone_number,
+                direction: "outbound",
+                text: text,
+                timestamp: new Date().toISOString(),
+                status: "sent",
+                conversation_id: currentThread.phone_number
+            };
+
+            try {
+                // Optimistically update UI
+                setActiveMessages(prev => [...prev, { ...newMessage, id: Date.now() }]);
+
+                const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newMessage)
+                });
+
+                if (!response.ok) throw new Error('Failed to send message');
+                showToast('success', 'Message sent successfully');
+            } catch (error) {
+                console.error('Error sending message:', error);
+                showToast('error', 'Failed to send message. Please try again.');
+                // Rollback optimistic update if needed or show error state
+            } finally {
+                setIsSending(false);
+            }
+        } else {
+            // Handle other channels or mock
+            showToast('success', 'Message sent (Mock)');
+        }
+    };
+
+    const handleToggleAI = async (active: boolean) => {
+        if (!currentThread || !currentThread.phone_number) return;
+
+        setIsAIActive(active); // Optimistic update
+        try {
+            const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversation_id: currentThread.phone_number,
+                    automated_response: active
+                })
+            });
+
+            if (!response.ok) throw new Error('Failed to update AI status');
+
+            showToast(active ? 'ai' : 'info',
+                active ? 'AI Assistant is now handling this conversation' : 'You have taken over from AI Assistant'
+            );
+        } catch (error) {
+            console.error('Error toggling AI:', error);
+            setIsAIActive(!active); // Rollback
+            showToast('error', 'Failed to update assistant status');
+        }
     };
 
     return (
@@ -102,20 +309,27 @@ const InboxPage = () => {
             <div className="flex-1 flex overflow-hidden">
                 {/* Thread List */}
                 <div className="w-[380px] border-r border-black/5 overflow-y-auto bg-white/50 backdrop-blur-sm">
-                    {threads.map((thread, index) => (
+                    {isLoading && threads.length === 0 ? (
+                        <div className="p-8 text-center text-slate-grey text-sm font-bold">
+                            <div className="animate-spin mb-2 flex justify-center">
+                                <Clock size={20} />
+                            </div>
+                            Loading conversations...
+                        </div>
+                    ) : threads.map((thread, index) => (
                         <ThreadListItem
                             key={thread.id}
                             name={thread.name}
                             channel={thread.channel}
                             snippet={thread.snippet}
-                            time={index === 0 ? "2m" : index === 1 ? "15m" : "1h"}
+                            time={thread.timestamp ? formatTime(thread.timestamp) : (thread.time || "")}
                             unit={thread.context}
                             status={thread.status}
                             priority={thread.priority}
                             aiChip={thread.chip}
                             sla={thread.sla}
-                            active={activeThread === index}
-                            onClick={() => setActiveThread(index)}
+                            active={currentThread?.phone_number === thread.phone_number}
+                            onClick={() => setActiveThreadId(thread.phone_number)}
                         />
                     ))}
                 </div>
@@ -124,31 +338,35 @@ const InboxPage = () => {
                 <div className="flex-1 flex flex-col bg-white overflow-hidden">
                     <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center bg-white/80 backdrop-blur-md z-10">
                         <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 rounded-2xl bg-soft-bg flex items-center justify-center text-lg font-black text-charcoal shadow-inner">{currentThread.name.substring(0, 2).toUpperCase()}</div>
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <h2 className="text-lg font-bold text-charcoal tracking-tight">{currentThread.name}</h2>
-                                    {currentThread.priority === 'High' && (
-                                        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-error/10 border border-error/20 text-error text-[10px] font-bold uppercase tracking-wider animate-pulse uppercase">
-                                            <AlertCircle size={10} /> SLA Critical
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="flex items-center gap-2 text-xs font-bold text-slate-grey">
-                                    <MessageCircle size={12} className="text-seedlink-green" /> <span>{currentThread.channel} Business</span>
-                                    <span className="w-1 h-1 rounded-full bg-black/10"></span>
-                                    <span className="text-error font-black uppercase tracking-tighter">{(currentThread as any).sla} to breach</span>
-                                </div>
+                            <div className="w-12 h-12 rounded-2xl bg-soft-bg flex items-center justify-center text-lg font-black text-charcoal shadow-inner">
+                                {currentThread ? currentThread.name.substring(0, 2).toUpperCase() : '??'}
                             </div>
+                            {currentThread && (
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h2 className="text-lg font-bold text-charcoal tracking-tight">{currentThread.name}</h2>
+                                        {currentThread.priority === 'High' && (
+                                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-error/10 border border-error/20 text-error text-[10px] font-bold uppercase tracking-wider animate-pulse">
+                                                <AlertCircle size={10} /> SLA Critical
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2 text-xs font-bold text-slate-grey">
+                                        <MessageCircle size={12} className="text-seedlink-green" /> <span>{currentThread.channel} Business</span>
+                                        <span className="w-1 h-1 rounded-full bg-black/10"></span>
+                                        <span className="text-error font-black uppercase tracking-tighter">{currentThread.sla} to breach</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                         <div className="flex items-center gap-3">
                             <div className="flex p-1 bg-soft-bg rounded-xl border border-black/5">
                                 {isAIActive ? (
-                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white text-seedlink-green shadow-sm flex items-center gap-2" onClick={() => { setIsAIActive(false); showToast('info', 'You have taken over from AI Assistant'); }}>
+                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white text-seedlink-green shadow-sm flex items-center gap-2" onClick={() => handleToggleAI(false)}>
                                         <Zap size={14} /> AI Assistant
                                     </button>
                                 ) : (
-                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-seedlink-green text-white shadow-sm flex items-center gap-2 translate-x-0" onClick={() => { setIsAIActive(true); showToast('ai', 'AI Assistant is now handling this conversation'); }}>
+                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-seedlink-green text-white shadow-sm flex items-center gap-2 translate-x-0" onClick={() => handleToggleAI(true)}>
                                         <User size={14} /> Human Active
                                     </button>
                                 )}
@@ -164,35 +382,56 @@ const InboxPage = () => {
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col scroll-smooth">
-                        <div className="flex items-center justify-center">
-                            <span className="px-4 py-1 bg-soft-bg text-[10px] font-bold text-slate-grey uppercase tracking-widest rounded-full">Yesterday</span>
-                        </div>
-
-                        <div className="flex flex-col gap-1 items-start max-w-[80%]">
-                            <div className="px-4 py-3 bg-soft-bg rounded-2xl rounded-tl-none text-sm text-charcoal font-medium leading-relaxed shadow-sm">
-                                Hello, I wanted to inquire about the latest seeds for the SOW project.
+                        {!currentThread ? (
+                            <div className="flex-1 flex flex-col items-center justify-center text-slate-grey gap-4">
+                                <MessageCircle size={48} className="opacity-20" />
+                                <p className="font-bold text-sm">Select a conversation to start chatting</p>
                             </div>
-                            <span className="text-[10px] font-bold text-slate-grey ml-1">10:30 AM</span>
-                        </div>
-
-                        <div className="flex flex-col gap-1 items-end self-end max-w-[80%]">
-                            <div className="px-4 py-3 bg-seedlink-green text-white rounded-2xl rounded-tr-none text-sm font-medium leading-relaxed shadow-md shadow-seedlink-green/20">
-                                Welcome to Seedlink! An AI assistant is currently helping you.
-                                One moment while I fetch the product catalog for SOW.
+                        ) : (isMessagesLoading && activeMessages.length === 0) ? (
+                            <div className="flex-1 flex flex-col items-center justify-center text-slate-grey gap-4">
+                                <div className="animate-spin">
+                                    <Clock size={32} />
+                                </div>
+                                <p className="font-bold text-sm">Loading messages...</p>
                             </div>
-                            <span className="text-[10px] font-bold text-slate-grey mr-1">10:31 AM • AI Assistant</span>
-                        </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-center">
+                                    <span className="px-4 py-1 bg-soft-bg text-[10px] font-bold text-slate-grey uppercase tracking-widest rounded-full">Conversation Started</span>
+                                </div>
 
-                        <div className="flex items-center justify-center">
-                            <span className="px-4 py-1 bg-soft-bg text-[10px] font-bold text-slate-grey uppercase tracking-widest rounded-full">Today</span>
-                        </div>
+                                {activeMessages.length > 0 ? (
+                                    activeMessages.map((msg) => (
+                                        <div
+                                            key={msg.id}
+                                            className={`flex flex-col gap-1 max-w-[80%] ${msg.direction === 'outbound' ? 'items-end self-end' : 'items-start'}`}
+                                        >
+                                            <div className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed shadow-sm ${msg.direction === 'outbound'
+                                                ? 'bg-seedlink-green text-white rounded-tr-none shadow-md shadow-seedlink-green/20'
+                                                : 'bg-soft-bg text-charcoal rounded-tl-none border border-black/5'
+                                                }`}>
+                                                {msg.text}
+                                            </div>
+                                            <span className="text-[10px] font-bold text-slate-grey mx-1">
+                                                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                {msg.direction === 'outbound' && ' • Sent'}
+                                            </span>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="flex flex-col gap-1 items-start max-w-[80%]">
+                                        <div className="px-4 py-3 bg-soft-bg rounded-2xl rounded-tl-none text-sm text-charcoal font-medium leading-relaxed shadow-sm border border-black/5">
+                                            {currentThread.snippet}
+                                        </div>
+                                        <span className="text-[10px] font-bold text-slate-grey ml-1 font-black">
+                                            {currentThread.timestamp ? currentThread.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ""}
+                                        </span>
+                                    </div>
+                                )}
 
-                        <div className="flex flex-col gap-1 items-start max-w-[80%]">
-                            <div className="px-4 py-3 bg-soft-bg rounded-2xl rounded-tl-none text-sm text-charcoal font-medium leading-relaxed shadow-sm border border-black/5">
-                                I need to track my order #5432. It was supposed to arrive today.
-                            </div>
-                            <span className="text-[10px] font-bold text-slate-grey ml-1 font-black">09:45 AM</span>
-                        </div>
+                                <div ref={messagesEndRef} />
+                            </>
+                        )}
                     </div>
 
                     <div className="p-6 bg-white border-t border-black/5 space-y-4">
@@ -236,6 +475,12 @@ const InboxPage = () => {
                                         if (e.target.value === '/') setShowSlashMenu(true);
                                         else setShowSlashMenu(false);
                                     }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleSendMessage();
+                                        }
+                                    }}
                                 />
                                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                                     <button
@@ -252,16 +497,12 @@ const InboxPage = () => {
                                     >
                                         <Zap size={18} />
                                     </button>
-                                    <button 
-                                        className="p-2.5 bg-charcoal text-white rounded-xl shadow-lg shadow-black/10 hover:bg-slate-800 transition-all active:scale-90"
-                                        onClick={() => {
-                                            if (messageInput.trim()) {
-                                                showToast('success', 'Message sent successfully');
-                                                setMessageInput('');
-                                            }
-                                        }}
+                                    <button
+                                        className={`p-2.5 bg-charcoal text-white rounded-xl shadow-lg shadow-black/10 hover:bg-slate-800 transition-all active:scale-90 ${isSending ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        onClick={handleSendMessage}
+                                        disabled={isSending}
                                     >
-                                        <Send size={18} />
+                                        <Send size={18} className={isSending ? 'animate-pulse' : ''} />
                                     </button>
                                 </div>
                             </div>
@@ -438,7 +679,7 @@ const InboxPage = () => {
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-bold text-slate-grey uppercase tracking-tighter">Phone</label>
-                                    <div className="text-xs font-bold text-charcoal">+92 300 9876543</div>
+                                    <div className="text-xs font-bold text-charcoal">{currentThread?.phone_number || "+92 300 9876543"}</div>
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-bold text-slate-grey uppercase tracking-tighter">Location</label>
