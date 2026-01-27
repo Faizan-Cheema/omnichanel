@@ -8,10 +8,11 @@ import CommandMenu from '@/components/CommandMenu';
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const isLoginPage = pathname === '/login';
+    const isWebChatPage = pathname === '/webchat';
 
-    if (isLoginPage) {
+    if (isLoginPage || isWebChatPage) {
         return (
-            <div className="min-h-screen bg-charcoal">
+            <div className="min-h-screen bg-soft-bg">
                 {children}
             </div>
         );
