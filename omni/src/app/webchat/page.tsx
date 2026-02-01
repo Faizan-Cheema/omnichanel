@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/components/ToastProvider';
 import { useMessagesRealtime } from '@/hooks/useMessagesRealtime';
+import { supabase } from '@/lib/supabase';
 
 const WebChatPage = () => {
     const { showToast } = useToast();
@@ -35,11 +36,28 @@ const WebChatPage = () => {
 
         if (!silent) setIsMessagesLoading(true);
         try {
-            const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${phoneNumber}`);
-            const data = await response.json();
-            setActiveMessages(data || []);
+            const { data, error } = await supabase
+                .from('contact_message')
+                .select('*')
+                .eq('conversation_id', phoneNumber)
+                .order('timestamp', { ascending: true });
+
+            if (error) throw error;
+
+            const mappedMessages = data.map((msg: any, index: number) => ({
+                id: msg.message_id || index,
+                text: msg.message_text || msg.message,
+                direction: msg.direction,
+                timestamp: msg.timestamp,
+                sender: msg.sender,
+                receiver: msg.receiver,
+                conversation_id: msg.conversation_id,
+                status: 'sent'
+            }));
+
+            setActiveMessages(mappedMessages);
         } catch (error) {
-            console.error('Error fetching messages:', error);
+            console.error('Error fetching messages from Supabase:', error);
             if (!silent) showToast('error', 'Failed to fetch messages');
         } finally {
             if (!silent) setIsMessagesLoading(false);
@@ -228,11 +246,10 @@ const WebChatPage = () => {
                                                 key={msg.id || msg.message_id || Math.random()}
                                                 className={`flex flex-col gap-1 max-w-[85%] sm:max-w-[80%] ${msg.direction === 'outbound' ? 'items-start self-start' : 'items-end self-end'}`}
                                             >
-                                                <div className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed shadow-sm ${
-                                                    msg.direction === 'outbound'
-                                                        ? 'bg-seedlink-green text-white rounded-tl-none shadow-md shadow-seedlink-green/20'
-                                                        : 'bg-soft-bg text-charcoal rounded-tr-none border border-black/5'
-                                                }`}>
+                                                <div className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed shadow-sm ${msg.direction === 'outbound'
+                                                    ? 'bg-seedlink-green text-white rounded-tl-none shadow-md shadow-seedlink-green/20'
+                                                    : 'bg-soft-bg text-charcoal rounded-tr-none border border-black/5'
+                                                    }`}>
                                                     {msg.text || msg.message}
                                                 </div>
                                                 <span className="text-[10px] font-bold text-slate-grey mx-1">
@@ -274,9 +291,8 @@ const WebChatPage = () => {
                                 />
                                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                                     <button
-                                        className={`p-2.5 bg-charcoal text-white rounded-xl shadow-lg shadow-black/10 hover:bg-slate-800 transition-all active:scale-90 ${
-                                            isSending ? 'opacity-50 cursor-not-allowed' : ''
-                                        }`}
+                                        className={`p-2.5 bg-charcoal text-white rounded-xl shadow-lg shadow-black/10 hover:bg-slate-800 transition-all active:scale-90 ${isSending ? 'opacity-50 cursor-not-allowed' : ''
+                                            }`}
                                         onClick={handleSendMessage}
                                         disabled={isSending || !messageInput.trim()}
                                     >

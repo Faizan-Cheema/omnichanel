@@ -23,6 +23,7 @@ import DispositionModal from '@/components/modals/DispositionModal';
 import { useToast } from '@/components/ToastProvider';
 import { useMessagesRealtime } from '@/hooks/useMessagesRealtime';
 import { useThreadsRealtime } from '@/hooks/useThreadsRealtime';
+import { supabase } from '@/lib/supabase';
 
 const InboxPage = () => {
     const { showToast } = useToast();
@@ -53,35 +54,34 @@ const InboxPage = () => {
     const fetchWhatsAppThreads = useCallback(async (silent = false) => {
         if (!silent) setIsLoading(true);
         try {
-            const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api');
-            const data = await response.json();
+            const { data, error } = await supabase
+                .from('contact')
+                .select('*')
+                .order('last_message_timestamp', { ascending: false });
+
+            if (error) throw error;
 
             const mappedThreads = data.map((item: any) => ({
-                id: item.id,
+                id: item.phone_number, // using phone_number as ID as it's the primary key
                 name: item.name || item.phone_number,
-                channel: "WhatsApp",
+                channel: (item.message_source && item.message_source.toLowerCase() === 'whatsapp')
+                    ? "WhatsApp"
+                    : (item.message_source && item.message_source.toLowerCase() === 'webchat')
+                        ? "Web Chat"
+                        : (item.message_source || "WhatsApp"),
                 snippet: item.last_message_preview,
                 context: "Direct",
                 chip: item.automate_response ? "AI Active" : "Manual",
                 status: "New",
                 priority: "Medium",
                 sla: "2h",
-                timestamp: new Date(item.last_message_timestamp),
+                timestamp: item.last_message_timestamp ? new Date(item.last_message_timestamp) : new Date(),
                 phone_number: item.phone_number
             }));
 
-            setWhatsappThreads(prev => {
-                const merged = mappedThreads.map(nt => {
-                    const existing = prev.find(p => p.phone_number === nt.phone_number);
-                    if (existing && existing.timestamp.getTime() > nt.timestamp.getTime()) {
-                        return { ...nt, timestamp: existing.timestamp, snippet: existing.snippet };
-                    }
-                    return nt;
-                });
-                return merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-            });
+            setWhatsappThreads(mappedThreads);
         } catch (error) {
-            console.error('Error fetching WhatsApp threads:', error);
+            console.error('Error fetching WhatsApp threads from Supabase:', error);
             if (!silent) showToast('error', 'Failed to fetch WhatsApp threads');
         } finally {
             if (!silent) setIsLoading(false);
@@ -123,12 +123,28 @@ const InboxPage = () => {
 
         if (!silent) setIsMessagesLoading(true);
         try {
-            const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${activeThreadId}`);
-            const data = await response.json();
-            setActiveMessages(data);
+            const { data, error } = await supabase
+                .from('contact_message')
+                .select('*')
+                .eq('conversation_id', activeThreadId)
+                .order('timestamp', { ascending: true });
 
-            if (data.length > 0) {
-                const latestMsg = data[data.length - 1];
+            if (error) throw error;
+
+            const mappedMessages = data.map((msg: any, index: number) => ({
+                id: index, // or use some unique ID if available
+                text: msg.message_text,
+                direction: msg.direction,
+                timestamp: msg.timestamp,
+                sender: msg.sender,
+                receiver: msg.receiver,
+                conversation_id: msg.conversation_id
+            }));
+
+            setActiveMessages(mappedMessages);
+
+            if (mappedMessages.length > 0) {
+                const latestMsg = mappedMessages[mappedMessages.length - 1];
                 setWhatsappThreads(prev => prev.map(t =>
                     t.phone_number === activeThreadId
                         ? { ...t, snippet: latestMsg.text, timestamp: new Date(latestMsg.timestamp) }
@@ -136,7 +152,7 @@ const InboxPage = () => {
                 ));
             }
         } catch (error) {
-            console.error('Error fetching messages:', error);
+            console.error('Error fetching messages from Supabase:', error);
         } finally {
             if (!silent) setIsMessagesLoading(false);
         }
@@ -210,7 +226,10 @@ const InboxPage = () => {
                 const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(newMessage)
+                    body: JSON.stringify({
+                        to: currentThread.phone_number,
+                        text: text
+                    })
                 });
 
                 if (!response.ok) throw new Error('Failed to send message');
@@ -219,6 +238,42 @@ const InboxPage = () => {
                 console.error('Error sending message:', error);
                 showToast('error', 'Failed to send message. Please try again.');
                 // Rollback optimistic update if needed or show error state
+            } finally {
+                setIsSending(false);
+            }
+        } else if (currentThread.channel === 'Web Chat' && currentThread.phone_number) {
+            setIsSending(true);
+            const text = messageInput.trim();
+
+            // For Web Chat, we use a different webhook (likely the same as webchat page but outbound)
+            // Or use the provided webhook: https://caiphas-dev-n8n.syvyo.com/webhook/webchat?messages=${encodedMessage}&phone_number=${encodedPhoneNumber}
+            // Wait, the user said for webchat they want to read from db like for console.
+            // Outbound from admin to webchat:
+
+            const newMessage = {
+                message_id: `WEBCHAT.OUTBOUND${Date.now()}`,
+                from: "admin",
+                to: currentThread.phone_number,
+                direction: "outbound",
+                text: text,
+                timestamp: new Date().toISOString(),
+                status: "sent",
+                conversation_id: currentThread.phone_number
+            };
+
+            try {
+                // Optimistically update UI
+                setActiveMessages(prev => [...prev, { ...newMessage, id: Date.now() }]);
+
+                const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/webchat?messages=${encodeURIComponent(text)}&phone_number=${encodeURIComponent(currentThread.phone_number)}`, {
+                    method: 'GET'
+                });
+
+                if (!response.ok) throw new Error('Failed to send message');
+                showToast('success', 'Message sent successfully');
+            } catch (error) {
+                console.error('Error sending webchat message:', error);
+                showToast('error', 'Failed to send message. Please try again.');
             } finally {
                 setIsSending(false);
             }

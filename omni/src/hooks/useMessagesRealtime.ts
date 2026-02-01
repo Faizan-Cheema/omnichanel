@@ -5,9 +5,9 @@ import { supabase } from '@/lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 /**
- * Subscribes to Supabase Realtime for INSERT events on the messages table.
+ * Subscribes to Supabase Realtime for INSERT events on the contact_message table.
  * Only triggers onNewMessage when the new message belongs to the current conversation
- * (matched by "from" or "to" containing the conversation identifier, e.g. phone_number).
+ * (matched by "conversation_id" containing the conversation identifier, e.g. phone_number).
  */
 export function useMessagesRealtime(
   currentConversationId: string | null,
@@ -23,16 +23,22 @@ export function useMessagesRealtime(
       .channel('messages-realtime')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages' },
+        { event: '*', schema: 'public', table: 'contact_message' },
         (payload) => {
-          const newRow = payload.new as { from?: string; to?: string };
-          const from = newRow?.from ?? '';
-          const to = newRow?.to ?? '';
+          const newRow = payload.new as { conversation_id?: string };
+          const conversation_id = newRow?.conversation_id ?? '';
+          const belongsToConversation = conversation_id === currentConversationId;
 
-          const belongsToConversation =
-            from === currentConversationId || to === currentConversationId;
+          const timestamp = new Date().toISOString();
+          console.log('📡 [Messages] Realtime event received!');
+          console.log('   Timestamp:', timestamp);
+          console.log('   Event Type:', payload.eventType);
+          console.log('   New Data:', payload.new);
+          console.log('   Old Data:', payload.old);
+          console.log('   Full Payload:', payload);
+          console.log('   Belongs to current conversation:', belongsToConversation);
+          console.log('----------------------------------------');
 
-          console.log('[Realtime] messages INSERT', { from, to, currentConversationId, belongsToConversation, payload: payload.new });
           if (belongsToConversation) {
             onNewMessageRef.current();
           }

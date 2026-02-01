@@ -16,17 +16,24 @@ export function useThreadsRealtime(onRefresh: () => void) {
       .channel('threads-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'contacts' },
+        { event: '*', schema: 'public', table: 'contact' },
         (payload) => {
-          console.log('[Realtime] contacts', payload.eventType, payload.new ?? payload.old);
+          const timestamp = new Date().toISOString();
+          console.log('📡 [Threads] Realtime event received!');
+          console.log('   Timestamp:', timestamp);
+          console.log('   Event Type:', payload.eventType);
+          console.log('   New Data:', payload.new);
+          console.log('   Old Data:', payload.old);
+          console.log('   Full Payload:', payload);
+          console.log('----------------------------------------');
           onRefreshRef.current();
         }
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages' },
+        { event: 'INSERT', schema: 'public', table: 'contact_message' },
         (payload) => {
-          console.log('[Realtime] messages INSERT (threads refresh)', payload.new);
+          console.log('[Realtime] contact_message INSERT (threads refresh)', payload.new);
           onRefreshRef.current();
         }
       )
