@@ -19,9 +19,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     }
 
     return (
-        <div className="flex h-screen overflow-hidden bg-soft-bg">
+        <div className="flex h-screen overflow-hidden bg-soft-bg min-w-0">
             <Sidebar />
-            <main className="flex-1 overflow-y-auto relative">
+            <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto relative pl-14 lg:pl-0">
                 {children}
             </main>
             <CommandMenu />

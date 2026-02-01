@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     Send,
     MessageCircle,
@@ -10,6 +10,7 @@ import {
     Phone
 } from 'lucide-react';
 import { useToast } from '@/components/ToastProvider';
+import { useMessagesRealtime } from '@/hooks/useMessagesRealtime';
 
 const WebChatPage = () => {
     const { showToast } = useToast();
@@ -29,32 +30,30 @@ const WebChatPage = () => {
         scrollToBottom();
     }, [activeMessages]);
 
-    // Fetch messages when phone number is set
+    const fetchMessages = useCallback(async (silent = false) => {
+        if (!phoneNumber) return;
+
+        if (!silent) setIsMessagesLoading(true);
+        try {
+            const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${phoneNumber}`);
+            const data = await response.json();
+            setActiveMessages(data || []);
+        } catch (error) {
+            console.error('Error fetching messages:', error);
+            if (!silent) showToast('error', 'Failed to fetch messages');
+        } finally {
+            if (!silent) setIsMessagesLoading(false);
+        }
+    }, [phoneNumber, showToast]);
+
+    // Fetch messages when phone number is set and on conversation change (no polling)
     useEffect(() => {
         if (!isPhoneNumberSet || !phoneNumber) return;
-
-        const fetchMessages = async (silent = false) => {
-            if (!silent) setIsMessagesLoading(true);
-            try {
-                const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${phoneNumber}`);
-                const data = await response.json();
-                setActiveMessages(data || []);
-            } catch (error) {
-                console.error('Error fetching messages:', error);
-                if (!silent) showToast('error', 'Failed to fetch messages');
-            } finally {
-                if (!silent) setIsMessagesLoading(false);
-            }
-        };
-
         fetchMessages();
+    }, [isPhoneNumberSet, phoneNumber, fetchMessages]);
 
-        const pollInterval = setInterval(() => {
-            fetchMessages(true);
-        }, 5000);
-
-        return () => clearInterval(pollInterval);
-    }, [phoneNumber, isPhoneNumberSet]);
+    // Supabase Realtime: refetch messages only when a new message is inserted for this conversation
+    useMessagesRealtime(isPhoneNumberSet ? phoneNumber : null, () => fetchMessages(true));
 
     const handleSetPhoneNumber = () => {
         if (!phoneNumber.trim()) {
@@ -130,22 +129,22 @@ const WebChatPage = () => {
     };
 
     return (
-        <div className="flex flex-col h-screen bg-soft-bg">
-            <header className="px-6 pt-6 pb-4 bg-white border-b border-black/5">
-                <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-seedlink-green/10 flex items-center justify-center">
+        <div className="flex flex-col h-screen bg-soft-bg min-w-0">
+            <header className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 bg-white border-b border-black/5 shrink-0">
+                <div className="flex justify-between items-center gap-2">
+                    <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-seedlink-green/10 flex items-center justify-center shrink-0">
                             <Globe size={20} className="text-seedlink-green" />
                         </div>
-                        <div>
-                            <h1 className="text-2xl font-black text-charcoal tracking-tight">Web Chat</h1>
-                            <p className="text-xs font-bold text-slate-grey">Chat with customers via web</p>
+                        <div className="min-w-0">
+                            <h1 className="text-xl sm:text-2xl font-black text-charcoal tracking-tight truncate">Web Chat</h1>
+                            <p className="text-[10px] sm:text-xs font-bold text-slate-grey truncate">Chat with customers via web</p>
                         </div>
                     </div>
                     {isPhoneNumberSet && (
                         <button
                             onClick={handleResetChat}
-                            className="px-4 py-2 bg-seedlink-green text-white text-sm font-black rounded-xl shadow-lg shadow-seedlink-green/20 hover:bg-seedlink-green/90 hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
+                            className="px-3 sm:px-4 py-2 bg-seedlink-green text-white text-xs sm:text-sm font-black rounded-xl shadow-lg shadow-seedlink-green/20 hover:bg-seedlink-green/90 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 shrink-0"
                         >
                             <span>+</span> Create new Chat
                         </button>
@@ -153,17 +152,17 @@ const WebChatPage = () => {
                 </div>
             </header>
 
-            <div className="flex-1 flex flex-col bg-white overflow-hidden">
+            <div className="flex-1 flex flex-col bg-white overflow-hidden min-h-0">
                 {!isPhoneNumberSet ? (
-                    <div className="flex-1 flex flex-col items-center justify-center p-8">
-                        <div className="w-24 h-24 rounded-2xl bg-soft-bg flex items-center justify-center mb-6">
-                            <Phone size={40} className="text-slate-grey" />
+                    <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8">
+                        <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-soft-bg flex items-center justify-center mb-4 sm:mb-6">
+                            <Phone size={32} className="sm:w-10 sm:h-10 text-slate-grey" />
                         </div>
-                        <h2 className="text-xl font-black text-charcoal mb-2">Enter Phone Number</h2>
-                        <p className="text-sm text-slate-grey mb-8 text-center max-w-md">
+                        <h2 className="text-lg sm:text-xl font-black text-charcoal mb-2 text-center">Enter Phone Number</h2>
+                        <p className="text-xs sm:text-sm text-slate-grey mb-6 sm:mb-8 text-center max-w-md px-2">
                             Enter the phone number you want to chat with to start the conversation
                         </p>
-                        <div className="w-full max-w-md space-y-4">
+                        <div className="w-full max-w-md space-y-4 px-2 sm:px-0">
                             <div className="relative">
                                 <Phone className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-grey" size={18} />
                                 <input
@@ -191,15 +190,15 @@ const WebChatPage = () => {
                 ) : (
                     <>
                         {/* Chat Header */}
-                        <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center bg-white/80 backdrop-blur-md z-10">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 rounded-2xl bg-soft-bg flex items-center justify-center text-lg font-black text-charcoal shadow-inner">
+                        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-black/5 flex justify-between items-center gap-2 bg-white/80 backdrop-blur-md z-10 shrink-0">
+                            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                                <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-soft-bg flex items-center justify-center text-base sm:text-lg font-black text-charcoal shadow-inner shrink-0">
                                     {phoneNumber.substring(0, 2).toUpperCase()}
                                 </div>
-                                <div>
-                                    <h2 className="text-lg font-bold text-charcoal tracking-tight">{phoneNumber}</h2>
+                                <div className="min-w-0">
+                                    <h2 className="text-base sm:text-lg font-bold text-charcoal tracking-tight truncate">{phoneNumber}</h2>
                                     <div className="flex items-center gap-2 text-xs font-bold text-slate-grey">
-                                        <Globe size={12} className="text-seedlink-green" />
+                                        <Globe size={12} className="text-seedlink-green shrink-0" />
                                         <span>Web Chat</span>
                                     </div>
                                 </div>
@@ -207,7 +206,7 @@ const WebChatPage = () => {
                         </div>
 
                         {/* Messages Area */}
-                        <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col scroll-smooth">
+                        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 flex flex-col scroll-smooth min-h-0">
                             {isMessagesLoading && activeMessages.length === 0 ? (
                                 <div className="flex-1 flex flex-col items-center justify-center text-slate-grey gap-4">
                                     <div className="animate-spin">
@@ -227,7 +226,7 @@ const WebChatPage = () => {
                                         activeMessages.map((msg) => (
                                             <div
                                                 key={msg.id || msg.message_id || Math.random()}
-                                                className={`flex flex-col gap-1 max-w-[80%] ${msg.direction === 'outbound' ? 'items-start self-start' : 'items-end self-end'}`}
+                                                className={`flex flex-col gap-1 max-w-[85%] sm:max-w-[80%] ${msg.direction === 'outbound' ? 'items-start self-start' : 'items-end self-end'}`}
                                             >
                                                 <div className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed shadow-sm ${
                                                     msg.direction === 'outbound'
@@ -257,12 +256,12 @@ const WebChatPage = () => {
                         </div>
 
                         {/* Message Input */}
-                        <div className="p-6 bg-white border-t border-black/5 space-y-4">
+                        <div className="p-4 sm:p-6 bg-white border-t border-black/5 space-y-4 shrink-0">
                             <div className="relative">
                                 <input
                                     type="text"
                                     placeholder="Type a message..."
-                                    className="w-full pl-4 pr-24 py-4 bg-soft-bg border-transparent focus:bg-white focus:border-seedlink-green/20 focus:ring-8 focus:ring-seedlink-green/5 rounded-2xl text-sm transition-all outline-none"
+                                    className="w-full pl-4 pr-16 sm:pr-24 py-3 sm:py-4 bg-soft-bg border-transparent focus:bg-white focus:border-seedlink-green/20 focus:ring-4 sm:focus:ring-8 focus:ring-seedlink-green/5 rounded-2xl text-sm transition-all outline-none"
                                     value={messageInput}
                                     onChange={(e) => setMessageInput(e.target.value)}
                                     onKeyDown={(e) => {

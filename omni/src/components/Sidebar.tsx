@@ -1,13 +1,15 @@
 "use client";
 
-import React from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
     Inbox,
     Phone,
     LayoutDashboard,
-    Settings
+    Settings,
+    Menu,
+    X
 } from 'lucide-react';
 
 const navItems = [
@@ -22,31 +24,41 @@ const secondaryNavItems = [
 
 const Sidebar = () => {
     const pathname = usePathname();
+    const [mobileOpen, setMobileOpen] = useState(false);
 
     const NavItem = ({ item }: { item: any }) => {
         const isActive = pathname.startsWith(item.href);
         return (
             <Link
                 href={item.href}
+                onClick={() => setMobileOpen(false)}
                 className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 group
                     ${isActive
                         ? 'bg-seedlink-green text-white shadow-lg shadow-seedlink-green/20'
                         : 'text-slate-grey hover:bg-black/5 hover:text-charcoal'
                     }`}
             >
-                <item.icon size={20} className={`${isActive ? 'text-white' : 'text-slate-grey group-hover:text-charcoal'}`} />
+                <item.icon size={20} className={`shrink-0 ${isActive ? 'text-white' : 'text-slate-grey group-hover:text-charcoal'}`} />
                 <span>{item.label}</span>
             </Link>
         );
     };
 
     return (
-        <aside className="w-64 h-screen bg-white border-r border-black/5 flex flex-col shrink-0">
-            <div className="p-6">
+        <>
+            <button onClick={() => setMobileOpen(true)} className="lg:hidden fixed top-4 left-4 z-40 p-2 bg-white rounded-xl shadow-lg border border-black/5 text-charcoal">
+                <Menu size={20} />
+            </button>
+            <div className={`fixed inset-0 bg-black/20 z-40 lg:hidden ${mobileOpen ? 'block' : 'hidden'}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
+            <aside className={`w-64 h-screen bg-white border-r border-black/5 flex flex-col shrink-0 fixed lg:static inset-y-0 left-0 z-50 transform transition-transform duration-200 lg:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+            <div className="p-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-seedlink-green flex items-center justify-center text-white font-black text-lg shadow-md">S</div>
+                    <div className="w-8 h-8 rounded-lg bg-seedlink-green flex items-center justify-center text-white font-black text-lg shadow-md shrink-0">S</div>
                     <span className="text-lg font-bold text-charcoal tracking-tight">Seedlink</span>
                 </div>
+                <button onClick={() => setMobileOpen(false)} className="lg:hidden p-2 -mr-2 hover:bg-black/5 rounded-lg">
+                    <X size={18} />
+                </button>
             </div>
 
             <nav className="flex-1 px-4 py-2 space-y-6">
@@ -80,6 +92,7 @@ const Sidebar = () => {
                 </div>
             </div>
         </aside>
+        </>
     );
 };
 

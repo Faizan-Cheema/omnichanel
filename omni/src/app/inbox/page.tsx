@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     Search,
     Filter,
@@ -8,7 +8,6 @@ import {
     MessageCircle,
     Phone,
     Globe,
-    CheckCircle2,
     Clock,
     ChevronRight,
     Send,
@@ -17,10 +16,13 @@ import {
     Zap,
     ArrowUpRight,
     AlertCircle,
-    Sparkles
+    Sparkles,
+    ChevronLeft
 } from 'lucide-react';
 import DispositionModal from '@/components/modals/DispositionModal';
 import { useToast } from '@/components/ToastProvider';
+import { useMessagesRealtime } from '@/hooks/useMessagesRealtime';
+import { useThreadsRealtime } from '@/hooks/useThreadsRealtime';
 
 const InboxPage = () => {
     const { showToast } = useToast();
@@ -36,6 +38,8 @@ const InboxPage = () => {
     const [activeMessages, setActiveMessages] = useState<any[]>([]);
     const [isMessagesLoading, setIsMessagesLoading] = useState(false);
     const [isSending, setIsSending] = useState(false);
+    const [showMobileList, setShowMobileList] = useState(true);
+    const [showContextPanel, setShowContextPanel] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -46,63 +50,55 @@ const InboxPage = () => {
         scrollToBottom();
     }, [activeMessages]);
 
-    useEffect(() => {
-        const fetchWhatsAppThreads = async (silent = false) => {
-            if (!silent) setIsLoading(true);
-            try {
-                const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api');
-                const data = await response.json();
+    const fetchWhatsAppThreads = useCallback(async (silent = false) => {
+        if (!silent) setIsLoading(true);
+        try {
+            const response = await fetch('https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api');
+            const data = await response.json();
 
-                // Map API data to our thread format
-                const mappedThreads = data.map((item: any) => ({
-                    id: item.id,
-                    name: item.name || item.phone_number,
-                    channel: "WhatsApp",
-                    snippet: item.last_message_preview,
-                    context: "Direct",
-                    chip: item.automate_response ? "AI Active" : "Manual",
-                    status: "New",
-                    priority: "Medium",
-                    sla: "2h", // Default SLA
-                    timestamp: new Date(item.last_message_timestamp),
-                    phone_number: item.phone_number
-                }));
+            const mappedThreads = data.map((item: any) => ({
+                id: item.id,
+                name: item.name || item.phone_number,
+                channel: "WhatsApp",
+                snippet: item.last_message_preview,
+                context: "Direct",
+                chip: item.automate_response ? "AI Active" : "Manual",
+                status: "New",
+                priority: "Medium",
+                sla: "2h",
+                timestamp: new Date(item.last_message_timestamp),
+                phone_number: item.phone_number
+            }));
 
-                setWhatsappThreads(prev => {
-                    const newThreads = [...mappedThreads];
-                    // Smart merge
-                    const merged = newThreads.map(nt => {
-                        const existing = prev.find(p => p.phone_number === nt.phone_number);
-                        if (existing && existing.timestamp.getTime() > nt.timestamp.getTime()) {
-                            return { ...nt, timestamp: existing.timestamp, snippet: existing.snippet };
-                        }
-                        return nt;
-                    });
-
-                    // Sort by timestamp descending so newest is always first
-                    return merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+            setWhatsappThreads(prev => {
+                const merged = mappedThreads.map(nt => {
+                    const existing = prev.find(p => p.phone_number === nt.phone_number);
+                    if (existing && existing.timestamp.getTime() > nt.timestamp.getTime()) {
+                        return { ...nt, timestamp: existing.timestamp, snippet: existing.snippet };
+                    }
+                    return nt;
                 });
-            } catch (error) {
-                console.error('Error fetching WhatsApp threads:', error);
-                if (!silent) showToast('error', 'Failed to fetch WhatsApp threads');
-            } finally {
-                if (!silent) setIsLoading(false);
-            }
-        };
+                return merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+            });
+        } catch (error) {
+            console.error('Error fetching WhatsApp threads:', error);
+            if (!silent) showToast('error', 'Failed to fetch WhatsApp threads');
+        } finally {
+            if (!silent) setIsLoading(false);
+        }
+    }, [showToast]);
 
+    useEffect(() => {
         fetchWhatsAppThreads();
+    }, [fetchWhatsAppThreads]);
 
-        const pollInterval = setInterval(() => {
-            fetchWhatsAppThreads(true);
-        }, 10000);
-
-        return () => clearInterval(pollInterval);
-    }, []);
+    useThreadsRealtime(() => fetchWhatsAppThreads(true));
 
     // Effect for INITIAL thread selection only
     useEffect(() => {
         if (!activeThreadId && whatsappThreads.length > 0) {
             setActiveThreadId(whatsappThreads[0].phone_number);
+            setShowMobileList(false);
         }
     }, [whatsappThreads, activeThreadId]);
 
@@ -122,40 +118,37 @@ const InboxPage = () => {
 
     const tabs = ['All', 'WhatsApp', 'Calls', 'Web Chat'];
 
-    useEffect(() => {
-        const fetchMessages = async (silent = false) => {
-            if (!currentThread || !currentThread.phone_number) return;
+    const fetchMessages = useCallback(async (silent = false) => {
+        if (!activeThreadId) return;
 
-            if (!silent) setIsMessagesLoading(true);
-            try {
-                const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${currentThread.phone_number}`);
-                const data = await response.json();
-                setActiveMessages(data);
+        if (!silent) setIsMessagesLoading(true);
+        try {
+            const response = await fetch(`https://caiphas-dev-n8n.syvyo.com/webhook/whatsapp/api?conversation_id=${activeThreadId}`);
+            const data = await response.json();
+            setActiveMessages(data);
 
-                // Update the thread list snippet and timestamp if it's newer
-                if (data.length > 0) {
-                    const latestMsg = data[data.length - 1];
-                    setWhatsappThreads(prev => prev.map(t =>
-                        t.phone_number === currentThread.phone_number
-                            ? { ...t, snippet: latestMsg.text, timestamp: new Date(latestMsg.timestamp) }
-                            : t
-                    ));
-                }
-            } catch (error) {
-                console.error('Error fetching messages:', error);
-            } finally {
-                if (!silent && activeMessages.length === 0) setIsMessagesLoading(false); // Only hide spinner if it was shown
+            if (data.length > 0) {
+                const latestMsg = data[data.length - 1];
+                setWhatsappThreads(prev => prev.map(t =>
+                    t.phone_number === activeThreadId
+                        ? { ...t, snippet: latestMsg.text, timestamp: new Date(latestMsg.timestamp) }
+                        : t
+                ));
             }
-        };
+        } catch (error) {
+            console.error('Error fetching messages:', error);
+        } finally {
+            if (!silent) setIsMessagesLoading(false);
+        }
+    }, [activeThreadId]);
 
+    // Fetch messages on mount and when thread changes (no polling)
+    useEffect(() => {
         fetchMessages();
+    }, [fetchMessages]);
 
-        const pollInterval = setInterval(() => {
-            fetchMessages(true);
-        }, 5000);
-
-        return () => clearInterval(pollInterval);
-    }, [activeThreadId]); // Only re-run when the person changes, not when their status updates
+    // Supabase Realtime: refetch messages only when a new message is inserted for this conversation
+    useMessagesRealtime(currentThread?.phone_number ?? null, () => fetchMessages(true));
 
     // Separate effect for AI status synchronization to avoid flickering
     useEffect(() => {
@@ -262,12 +255,12 @@ const InboxPage = () => {
     };
 
     return (
-        <div className="flex flex-col h-screen bg-soft-bg relative">
-            <header className="px-6 pt-6 pb-4 bg-white border-b border-black/5 flex flex-col gap-6">
-                <div className="flex justify-between items-center">
-                    <h1 className="text-2xl font-black text-charcoal tracking-tight">Unified Inbox</h1>
-                    <div className="flex items-center gap-4">
-                        <div className="relative group w-80">
+        <div className="flex flex-col h-screen bg-soft-bg relative min-w-0 overflow-x-hidden max-w-full">
+            <header className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 bg-white border-b border-black/5 flex flex-col gap-4 sm:gap-6 shrink-0">
+                <div className="flex justify-between items-center gap-2">
+                    <h1 className="text-xl sm:text-2xl font-black text-charcoal tracking-tight truncate">Unified Inbox</h1>
+                    <div className="hidden sm:block flex-shrink-0">
+                        <div className="relative group w-48 md:w-64 lg:w-80">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-grey group-focus-within:text-seedlink-green transition-colors" size={16} />
                             <input
                                 type="text"
@@ -278,19 +271,19 @@ const InboxPage = () => {
                     </div>
                 </div>
 
-                <div className="flex justify-between items-center">
-                    <div className="flex p-1 bg-soft-bg rounded-xl gap-1">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                    <div className="flex p-1 bg-soft-bg rounded-xl gap-1 overflow-x-auto">
                         {tabs.map((tab) => (
                             <button
                                 key={tab}
-                                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === tab ? 'bg-white text-charcoal shadow-sm' : 'text-slate-grey hover:text-charcoal'}`}
+                                className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab ? 'bg-white text-charcoal shadow-sm' : 'text-slate-grey hover:text-charcoal'}`}
                                 onClick={() => setActiveTab(tab)}
                             >
                                 {tab}
                             </button>
                         ))}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="hidden md:flex items-center gap-3 flex-shrink-0">
                         <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-black/5 rounded-lg text-xs font-bold text-slate-grey">
                             <span>Unit:</span>
                             <button className="text-charcoal hover:underline">All</button>
@@ -306,9 +299,9 @@ const InboxPage = () => {
                 </div>
             </header>
 
-            <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 flex overflow-hidden min-h-0 min-w-0">
                 {/* Thread List */}
-                <div className="w-[380px] border-r border-black/5 overflow-y-auto bg-white/50 backdrop-blur-sm">
+                <div className={`w-full md:w-[320px] lg:w-[380px] border-r border-black/5 overflow-y-auto bg-white/50 backdrop-blur-sm shrink-0 ${showMobileList ? 'flex flex-col' : 'hidden md:flex flex-col'}`}>
                     {isLoading && threads.length === 0 ? (
                         <div className="p-8 text-center text-slate-grey text-sm font-bold">
                             <div className="animate-spin mb-2 flex justify-center">
@@ -329,59 +322,65 @@ const InboxPage = () => {
                             aiChip={thread.chip}
                             sla={thread.sla}
                             active={currentThread?.phone_number === thread.phone_number}
-                            onClick={() => setActiveThreadId(thread.phone_number)}
+                            onClick={() => {
+                                setActiveThreadId(thread.phone_number);
+                                setShowMobileList(false);
+                            }}
                         />
                     ))}
                 </div>
 
                 {/* Active Workspace */}
-                <div className="flex-1 flex flex-col bg-white overflow-hidden">
-                    <div className="px-6 py-4 border-b border-black/5 flex justify-between items-center bg-white/80 backdrop-blur-md z-10">
-                        <div className="flex items-center gap-4">
+                <div className={`flex-1 flex flex-col bg-white overflow-hidden min-w-0 ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
+                    <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-black/5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 bg-white/80 backdrop-blur-md z-10 shrink-0 min-w-0">
+                        <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1 sm:flex-initial">
+                            <button onClick={() => setShowMobileList(true)} className="md:hidden p-2 -ml-2 hover:bg-black/5 rounded-lg transition-colors shrink-0">
+                                <ChevronLeft size={20} className="text-charcoal" />
+                            </button>
                             <div className="w-12 h-12 rounded-2xl bg-soft-bg flex items-center justify-center text-lg font-black text-charcoal shadow-inner">
                                 {currentThread ? currentThread.name.substring(0, 2).toUpperCase() : '??'}
                             </div>
                             {currentThread && (
-                                <div>
-                                    <div className="flex items-center gap-2">
-                                        <h2 className="text-lg font-bold text-charcoal tracking-tight">{currentThread.name}</h2>
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <h2 className="text-base sm:text-lg font-bold text-charcoal tracking-tight truncate">{currentThread.name}</h2>
                                         {currentThread.priority === 'High' && (
                                             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-error/10 border border-error/20 text-error text-[10px] font-bold uppercase tracking-wider animate-pulse">
                                                 <AlertCircle size={10} /> SLA Critical
                                             </div>
                                         )}
                                     </div>
-                                    <div className="flex items-center gap-2 text-xs font-bold text-slate-grey">
-                                        <MessageCircle size={12} className="text-seedlink-green" /> <span>{currentThread.channel} Business</span>
-                                        <span className="w-1 h-1 rounded-full bg-black/10"></span>
-                                        <span className="text-error font-black uppercase tracking-tighter">{currentThread.sla} to breach</span>
+                                    <div className="flex items-center gap-2 text-xs font-bold text-slate-grey truncate">
+                                        <MessageCircle size={12} className="text-seedlink-green shrink-0" /> <span className="truncate">{currentThread.channel} Business</span>
+                                        <span className="w-1 h-1 rounded-full bg-black/10 shrink-0"></span>
+                                        <span className="text-error font-black uppercase tracking-tighter shrink-0">{currentThread.sla} to breach</span>
                                     </div>
                                 </div>
                             )}
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 flex-wrap">
                             <div className="flex p-1 bg-soft-bg rounded-xl border border-black/5">
                                 {isAIActive ? (
-                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white text-seedlink-green shadow-sm flex items-center gap-2" onClick={() => handleToggleAI(false)}>
-                                        <Zap size={14} /> AI Assistant
+                                    <button className="px-2 sm:px-4 py-1.5 rounded-lg text-xs font-bold bg-white text-seedlink-green shadow-sm flex items-center gap-1 sm:gap-2" onClick={() => handleToggleAI(false)}>
+                                        <Zap size={14} className="shrink-0" /> <span className="hidden sm:inline">AI Assistant</span>
                                     </button>
                                 ) : (
-                                    <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-seedlink-green text-white shadow-sm flex items-center gap-2 translate-x-0" onClick={() => handleToggleAI(true)}>
-                                        <User size={14} /> Human Active
+                                    <button className="px-2 sm:px-4 py-1.5 rounded-lg text-xs font-bold bg-seedlink-green text-white shadow-sm flex items-center gap-1 sm:gap-2" onClick={() => handleToggleAI(true)}>
+                                        <User size={14} className="shrink-0" /> <span className="hidden sm:inline">Human Active</span>
                                     </button>
                                 )}
                             </div>
-                            <div className="w-px h-6 bg-black/5 mx-2"></div>
-                            <div className="flex items-center gap-2">
+                            <div className="w-px h-6 bg-black/5 mx-1 sm:mx-2 hidden sm:block"></div>
+                            <div className="hidden lg:flex items-center gap-2">
                                 <button className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-grey hover:bg-soft-bg transition-colors" onClick={() => showToast('info', 'Conversation assigned to SOW team')}>Assign</button>
                                 <button className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-grey hover:bg-soft-bg transition-colors" onClick={() => showToast('info', 'Conversation escalated to supervisor')}>Escalate</button>
-                                <button className="px-4 py-1.5 rounded-lg bg-black text-white text-xs font-bold hover:bg-slate-800 transition-colors shadow-lg shadow-black/10" onClick={() => setIsClosing(true)}>Close</button>
                             </div>
-                            <button className="p-2 hover:bg-soft-bg rounded-lg text-slate-grey transition-colors"><MoreHorizontal size={18} /></button>
+                            <button className="px-3 sm:px-4 py-1.5 rounded-lg bg-black text-white text-xs font-bold hover:bg-slate-800 transition-colors shadow-lg shadow-black/10 shrink-0" onClick={() => setIsClosing(true)}>Close</button>
+                            <button className="xl:hidden p-2 hover:bg-soft-bg rounded-lg text-slate-grey transition-colors shrink-0" onClick={() => setShowContextPanel(!showContextPanel)}><MoreHorizontal size={18} /></button>
                         </div>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col scroll-smooth">
+                    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 flex flex-col scroll-smooth min-h-0">
                         {!currentThread ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-slate-grey gap-4">
                                 <MessageCircle size={48} className="opacity-20" />
@@ -404,7 +403,7 @@ const InboxPage = () => {
                                     activeMessages.map((msg) => (
                                         <div
                                             key={msg.id}
-                                            className={`flex flex-col gap-1 max-w-[80%] ${msg.direction === 'outbound' ? 'items-end self-end' : 'items-start'}`}
+                                            className={`flex flex-col gap-1 max-w-[85%] sm:max-w-[80%] ${msg.direction === 'outbound' ? 'items-end self-end' : 'items-start'}`}
                                         >
                                             <div className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed shadow-sm ${msg.direction === 'outbound'
                                                 ? 'bg-seedlink-green text-white rounded-tr-none shadow-md shadow-seedlink-green/20'
@@ -434,8 +433,8 @@ const InboxPage = () => {
                         )}
                     </div>
 
-                    <div className="p-6 bg-white border-t border-black/5 space-y-4">
-                        <div className="relative">
+                    <div className="p-4 sm:p-6 bg-white border-t border-black/5 space-y-4 shrink-0 min-w-0 overflow-hidden">
+                        <div className="relative min-w-0">
                             {showSlashMenu && (
                                 <div className="absolute bottom-full left-0 w-80 mb-4 bg-white rounded-2xl shadow-2xl border border-black/5 overflow-hidden animate-in slide-in-from-bottom-4 duration-300 z-50">
                                     <div className="px-4 py-2 bg-soft-bg text-[10px] font-bold text-slate-grey uppercase tracking-widest border-b border-black/5">Quick Templates</div>
@@ -468,7 +467,7 @@ const InboxPage = () => {
                                 <input
                                     type="text"
                                     placeholder="Type a response or '/' for templates..."
-                                    className="w-full pl-4 pr-24 py-4 bg-soft-bg border-transparent focus:bg-white focus:border-seedlink-green/20 focus:ring-8 focus:ring-seedlink-green/5 rounded-2xl text-sm transition-all outline-none"
+                                    className="w-full min-w-0 pl-4 pr-24 py-4 bg-soft-bg border-transparent focus:bg-white focus:border-seedlink-green/20 focus:ring-4 sm:focus:ring-8 focus:ring-seedlink-green/5 rounded-2xl text-sm transition-all outline-none"
                                     value={messageInput}
                                     onChange={(e) => {
                                         setMessageInput(e.target.value);
@@ -508,16 +507,16 @@ const InboxPage = () => {
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all" onClick={() => setMessageInput("Can you please provide your order ID?")}>ORDER STATUS</button>
-                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all" onClick={() => setMessageInput("Here is the technical guide for your fertilizer.")}>PRODUCT LINK</button>
-                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all">ESCALATE</button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all whitespace-nowrap" onClick={() => setMessageInput("Can you please provide your order ID?")}>ORDER STATUS</button>
+                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all whitespace-nowrap" onClick={() => setMessageInput("Here is the technical guide for your fertilizer.")}>PRODUCT LINK</button>
+                            <button className="px-3 py-1.5 border border-black/5 rounded-lg text-[10px] font-bold text-slate-grey hover:bg-soft-bg hover:text-charcoal transition-all whitespace-nowrap">ESCALATE</button>
                         </div>
                     </div>
                 </div>
 
                 {/* Context Panel */}
-                <div className="w-[360px] border-l border-black/5 overflow-y-auto bg-soft-bg/50 backdrop-blur-sm p-6 space-y-8">
+                <div className={`w-[280px] sm:w-[320px] xl:w-[360px] min-w-0 border-l border-black/5 overflow-y-auto overflow-x-hidden bg-soft-bg/50 backdrop-blur-sm p-4 sm:p-6 space-y-6 sm:space-y-8 shrink-0 ${showContextPanel ? 'flex flex-col' : 'hidden'} xl:flex`}>
                     <section className="space-y-4">
                         <div className="flex items-center gap-2 text-[10px] font-bold text-slate-grey uppercase tracking-widest">
                             <Zap size={14} className="text-seedlink-green" /> AI Insights
